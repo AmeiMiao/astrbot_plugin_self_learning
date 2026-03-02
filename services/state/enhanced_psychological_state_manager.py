@@ -196,17 +196,26 @@ class EnhancedPsychologicalStateManager(AsyncServiceBase):
                     # 获取组件
                     components = await component_repo.get_components(state.id)
 
-                    # 转换为 CompositePsychologicalState
+                    # 转换 ORM 组件对象为 dataclass 实例
+                    # 使用 getattr 进行防御性读取，防止 ORM 属性未加载时抛出
+                    # AttributeError（如 lazy-load 失败或 schema 不一致）
                     state_components = []
                     for comp in components:
-                        state_components.append(PsychologicalStateComponent(
-                            category=comp.category,
-                            state_type=comp.state_type,
-                            value=comp.value,
-                            threshold=comp.threshold,
-                            description=comp.description or "",
-                            start_time=float(comp.start_time) if comp.start_time else time.time()
-                        ))
+                        try:
+                            state_components.append(PsychologicalStateComponent(
+                                category=getattr(comp, 'category', 'unknown'),
+                                state_type=getattr(comp, 'state_type', 'unknown'),
+                                value=float(getattr(comp, 'value', 0.5)),
+                                threshold=float(getattr(comp, 'threshold', 0.3)),
+                                description=getattr(comp, 'description', '') or "",
+                                start_time=float(getattr(comp, 'start_time', 0))
+                                if getattr(comp, 'start_time', None) else time.time()
+                            ))
+                        except Exception as comp_err:
+                            self._logger.warning(
+                                f"[增强型心理状态] 转换组件失败: {comp_err}, "
+                                f"comp_type={type(comp).__name__}"
+                            )
 
                     composite_state = CompositePsychologicalState(
                         group_id=group_id,
