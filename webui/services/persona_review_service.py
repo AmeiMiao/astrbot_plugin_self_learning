@@ -622,8 +622,15 @@ class PersonaReviewService:
                 style_updates = await self.database_manager.get_reviewed_style_learning_updates(limit, offset, status_filter)
                 if style_updates:
                     for update in style_updates:
-                        if update.get('id') is not None:
-                            update['id'] = f"style_{update['id']}"
+                        # 转换风格学习字段为前端统一格式
+                        update['id'] = f"style_{update['id']}" if update.get('id') is not None else None
+                        update['update_type'] = update.get('type', UPDATE_TYPE_STYLE_LEARNING)
+                        update['original_content'] = update.get('original_content', '')
+                        update['new_content'] = update.get('few_shots_content', '')
+                        update['proposed_content'] = update.get('few_shots_content', '')
+                        update['confidence_score'] = update.get('confidence_score', 0.9)
+                        update['reason'] = update.get('description', '')
+                        update['review_source'] = 'style_learning'
                     reviewed_updates.extend(style_updates)
             except Exception as e:
                 logger.warning(f"获取已审查风格学习更新失败: {e}")
