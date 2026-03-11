@@ -16,6 +16,7 @@ from .social import social_bp
 from .persona_reviews import persona_reviews_bp
 from .intelligent_chat import intelligent_chat_bp
 from .graph_share import graph_share_bp
+from .data_management import data_management_bp
 
 # monitoring blueprint requires prometheus_client; degrade gracefully
 try:
@@ -45,6 +46,7 @@ def get_blueprints() -> List[Blueprint]:
         persona_reviews_bp,
         intelligent_chat_bp,
         graph_share_bp,
+        data_management_bp,
     ]
     if _has_monitoring:
         bps.append(monitoring_bp)
@@ -77,6 +79,7 @@ __all__ = [
     'persona_reviews_bp',
     'intelligent_chat_bp',
     'graph_share_bp',
+    'data_management_bp',
     'get_blueprints',
     'register_blueprints'
 ]
