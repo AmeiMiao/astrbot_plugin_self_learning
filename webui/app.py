@@ -67,7 +67,7 @@ def create_app(webui_config: WebUIConfig = None) -> Quart:
     app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
     # 启用 CORS
-    cors(app, allow_credentials=True)
+    cors(app)
 
     # 存储配置到应用上下文
     if webui_config:
