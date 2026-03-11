@@ -218,6 +218,38 @@ class SelfLearningPlugin(star.Star):
         if handler:
             await handler.handle(event, req)
 
+    # Bot 出站消息捕获
+
+    @filter.after_message_sent()
+    async def on_bot_message_sent(self, event: AstrMessageEvent):
+        """捕获 Bot 发送的消息并存入数据库，用于 fewshot 对话对提取。"""
+        try:
+            if self._shutting_down:
+                return
+            if not self.plugin_config or not self.plugin_config.enable_message_capture:
+                return
+            db = getattr(self, 'db_manager', None)
+            if not db or not db.engine:
+                return
+            result = event.get_result()
+            if not result or not result.chain:
+                return
+            from astrbot.core.message.components import Plain
+            text_parts = []
+            for comp in result.chain:
+                if isinstance(comp, Plain):
+                    text_parts.append(comp.text)
+            bot_text = "".join(text_parts).strip()
+            if not bot_text:
+                return
+            group_id = event.get_group_id() or event.get_sender_id()
+            await db.save_bot_message(
+                group_id=group_id,
+                message=bot_text,
+            )
+        except Exception as e:
+            logger.warning(f"保存Bot出站消息失败: {e}", exc_info=True)
+
     # 命令处理器（薄委托）
 
     @filter.command("learning_status")
