@@ -282,11 +282,27 @@ class ConversationGoalManager:
         from ..response import PromptProtectionService
         self.prompt_protection = PromptProtectionService(wrapper_template_index=0)
 
-        # 初始化Guardrails管理器用于JSON验证
-        from ...utils.guardrails_manager import get_guardrails_manager, GoalAnalysisResult, ConversationIntentAnalysis
-        self.guardrails = get_guardrails_manager()
-        self.GoalAnalysisResult = GoalAnalysisResult
-        self.ConversationIntentAnalysis = ConversationIntentAnalysis
+        # 初始化Guardrails管理器用于JSON验证。
+        # 某些 guardrails 版本依赖旧版 openai.error 接口；在当前环境中
+        # 导入失败时降级为基础 JSON 解析，避免整个 goal manager 无法启动。
+        try:
+            from ...utils.guardrails_manager import (
+                get_guardrails_manager,
+                GoalAnalysisResult,
+                ConversationIntentAnalysis,
+            )
+
+            self.guardrails = get_guardrails_manager()
+            self.GoalAnalysisResult = GoalAnalysisResult
+            self.ConversationIntentAnalysis = ConversationIntentAnalysis
+        except Exception as e:
+            logger.warning(
+                f"Guardrails 初始化失败，将降级为基础 JSON 解析: {e}",
+                exc_info=True,
+            )
+            self.guardrails = None
+            self.GoalAnalysisResult = None
+            self.ConversationIntentAnalysis = None
 
     def _generate_session_id(self, group_id: str, user_id: str) -> str:
         """生成会话ID (24小时内保持不变)"""
@@ -505,29 +521,42 @@ class ConversationGoalManager:
                 logger.error(f"消毒响应失败: {sanitize_error}", exc_info=True)
                 sanitized_response = response # 使用原始响应
 
-            # 使用Guardrails Pydantic模型验证和解析JSON
-            try:
-                # 直接解析已有的响应文本
-                parsed_result = self.guardrails.parse_json_direct(
-                    sanitized_response,
-                    model_class=self.GoalAnalysisResult # 使用正确的模型引用
-                )
+            result = None
+            if self.guardrails and self.GoalAnalysisResult:
+                try:
+                    parsed_result = self.guardrails.parse_json_direct(
+                        sanitized_response,
+                        model_class=self.GoalAnalysisResult,
+                    )
 
-                if parsed_result:
-                    # 转换为字典格式
+                    if parsed_result:
+                        result = {
+                            "goal_type": parsed_result.goal_type,
+                            "topic": parsed_result.topic,
+                            "confidence": parsed_result.confidence,
+                            "reasoning": parsed_result.reasoning,
+                        }
+                        logger.debug(f" [对话目标] Pydantic验证成功: goal_type={result['goal_type']}")
+                except Exception as validation_error:
+                    logger.error(f"Pydantic验证失败: {validation_error}", exc_info=True)
+
+            if result is None:
+                try:
+                    import json
+                    import re
+
+                    match = re.search(r"\{.*\}", sanitized_response, re.S)
+                    candidate = match.group(0) if match else sanitized_response
+                    parsed = json.loads(candidate)
                     result = {
-                        "goal_type": parsed_result.goal_type,
-                        "topic": parsed_result.topic,
-                        "confidence": parsed_result.confidence,
-                        "reasoning": parsed_result.reasoning
+                        "goal_type": str(parsed.get("goal_type", "casual_chat")).strip() or "casual_chat",
+                        "topic": str(parsed.get("topic", "闲聊")).strip() or "闲聊",
+                        "confidence": float(parsed.get("confidence", 0.5) or 0.5),
+                        "reasoning": str(parsed.get("reasoning", "")).strip(),
                     }
-                    logger.debug(f" [对话目标] Pydantic验证成功: goal_type={result['goal_type']}")
-                else:
-                    result = None
-
-            except Exception as validation_error:
-                logger.error(f"Pydantic验证失败: {validation_error}", exc_info=True)
-                result = None
+                    logger.debug(f" [对话目标] 基础JSON解析成功: goal_type={result['goal_type']}")
+                except Exception as json_error:
+                    logger.error(f"基础JSON解析失败: {json_error}", exc_info=True)
 
             # 如果验证失败,使用回退值
             if result is None:
@@ -614,15 +643,28 @@ class ConversationGoalManager:
                 logger.error(f"消毒响应失败: {sanitize_error}", exc_info=True)
                 sanitized_response = response # 使用原始响应
 
-            # 使用guardrails验证和清理JSON
-            try:
-                stages = self.guardrails.validate_and_clean_json(
-                    sanitized_response,
-                    expected_type="array"
-                )
-            except Exception as validation_error:
-                logger.error(f"JSON验证失败: {validation_error}", exc_info=True)
-                stages = None
+            stages = None
+            if self.guardrails:
+                try:
+                    stages = self.guardrails.validate_and_clean_json(
+                        sanitized_response,
+                        expected_type="array"
+                    )
+                except Exception as validation_error:
+                    logger.error(f"JSON验证失败: {validation_error}", exc_info=True)
+
+            if stages is None:
+                try:
+                    import json
+                    import re
+
+                    match = re.search(r"\[.*\]", sanitized_response, re.S)
+                    candidate = match.group(0) if match else sanitized_response
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, list):
+                        stages = [str(stage).strip() for stage in parsed if str(stage).strip()]
+                except Exception as json_error:
+                    logger.error(f"阶段规划基础JSON解析失败: {json_error}", exc_info=True)
 
             # 如果验证成功且是有效列表,返回
             if isinstance(stages, list) and len(stages) >= 2:
@@ -817,35 +859,53 @@ Bot: {bot_response}
                 logger.error(f"消毒响应失败: {sanitize_error}", exc_info=True)
                 sanitized_response = response # 使用原始响应
 
-            # 使用Guardrails Pydantic模型验证和解析JSON
-            try:
-                # 直接解析已有的响应文本
-                parsed_result = self.guardrails.parse_json_direct(
-                    sanitized_response,
-                    model_class=self.ConversationIntentAnalysis # 使用正确的模型引用
-                )
+            analysis = None
+            if self.guardrails and self.ConversationIntentAnalysis:
+                try:
+                    parsed_result = self.guardrails.parse_json_direct(
+                        sanitized_response,
+                        model_class=self.ConversationIntentAnalysis,
+                    )
 
-                if parsed_result:
-                    # 转换为字典格式
+                    if parsed_result:
+                        analysis = {
+                            "goal_switch_needed": parsed_result.goal_switch_needed,
+                            "new_goal_type": parsed_result.new_goal_type,
+                            "new_topic": parsed_result.new_topic,
+                            "topic_completed": parsed_result.topic_completed,
+                            "stage_completed": parsed_result.stage_completed,
+                            "stage_adjustment_needed": parsed_result.stage_adjustment_needed,
+                            "suggested_stage": parsed_result.suggested_stage,
+                            "completion_signals": parsed_result.completion_signals,
+                            "user_engagement": parsed_result.user_engagement,
+                            "reasoning": parsed_result.reasoning,
+                        }
+                        logger.debug(f" [对话目标] 意图分析Pydantic验证成功")
+                except Exception as validation_error:
+                    logger.error(f"意图分析Pydantic验证失败: {validation_error}", exc_info=True)
+
+            if analysis is None:
+                try:
+                    import json
+                    import re
+
+                    match = re.search(r"\{.*\}", sanitized_response, re.S)
+                    candidate = match.group(0) if match else sanitized_response
+                    parsed = json.loads(candidate)
                     analysis = {
-                        "goal_switch_needed": parsed_result.goal_switch_needed,
-                        "new_goal_type": parsed_result.new_goal_type,
-                        "new_topic": parsed_result.new_topic,
-                        "topic_completed": parsed_result.topic_completed,
-                        "stage_completed": parsed_result.stage_completed,
-                        "stage_adjustment_needed": parsed_result.stage_adjustment_needed,
-                        "suggested_stage": parsed_result.suggested_stage,
-                        "completion_signals": parsed_result.completion_signals,
-                        "user_engagement": parsed_result.user_engagement,
-                        "reasoning": parsed_result.reasoning
+                        "goal_switch_needed": bool(parsed.get("goal_switch_needed", False)),
+                        "new_goal_type": str(parsed.get("new_goal_type", "")).strip(),
+                        "new_topic": str(parsed.get("new_topic", "")).strip(),
+                        "topic_completed": bool(parsed.get("topic_completed", False)),
+                        "stage_completed": bool(parsed.get("stage_completed", False)),
+                        "stage_adjustment_needed": bool(parsed.get("stage_adjustment_needed", False)),
+                        "suggested_stage": str(parsed.get("suggested_stage", "")).strip(),
+                        "completion_signals": parsed.get("completion_signals", []) if isinstance(parsed.get("completion_signals", []), list) else [],
+                        "user_engagement": float(parsed.get("user_engagement", 0.5) or 0.5),
+                        "reasoning": str(parsed.get("reasoning", "")).strip(),
                     }
-                    logger.debug(f" [对话目标] 意图分析Pydantic验证成功")
-                else:
-                    analysis = None
-
-            except Exception as validation_error:
-                logger.error(f"意图分析Pydantic验证失败: {validation_error}", exc_info=True)
-                analysis = None
+                except Exception as json_error:
+                    logger.error(f"意图分析基础JSON解析失败: {json_error}", exc_info=True)
 
             # 如果验证失败,使用回退值
             if analysis is None:
